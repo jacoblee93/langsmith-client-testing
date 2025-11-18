@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { v4 } from "uuid";
-import { Client } from "langsmith";
+import { Client, overrideFetchImplementation } from "langsmith";
 import { traceable } from "langsmith/traceable";
 
 /**
@@ -22,11 +22,23 @@ import { traceable } from "langsmith/traceable";
 const TEST_DURATION_MS = 120000; // Run for 120 seconds (2 minutes)
 const TRACE_INTERVAL_MS = 10; // Create traces VERY rapidly (100 per second)
 
-// Mock fetch to simulate 502 Bad Gateway responses
+let overriddenFetchCalls = 0;
+let totalBodySize = 0;
+
+// Suppress console.warn and console.error for this test
+console.warn = () => {};
+console.error = () => {};
+
+// Mock fetch to simulate 502 Bad Gateway responses with 1 minute hang
 global.fetch = async (input: any, init?: any) => {
   // Intercept requests to LangSmith API and return 502
   const url = typeof input === "string" ? input : input.url;
   if (url.includes("api.smith.langchain")) {
+    overriddenFetchCalls++;
+    totalBodySize += init.body.byteLength;
+    // Hang for 1 minute before returning 502
+    // await new Promise((resolve) => setTimeout(resolve, 60000));
+
     // Return a 502 Bad Gateway response
     return new Response(JSON.stringify({ error: "Bad Gateway" }), {
       status: 502,
@@ -145,32 +157,6 @@ const callOpenAI = traceable(
   { name: "openai_call" }
 );
 
-// Main pipeline with retry logic
-const chatCompletionWithModeration = traceable(
-  async (userMessages: string[], isRetry: boolean = false): Promise<string> => {
-    // Step 1: Input moderation (up to 6 self-calls)
-    await inputModeration(userMessages);
-
-    // Step 2: Call OpenAI
-    let output: string;
-    try {
-      output = await callOpenAI(userMessages);
-    } catch (error) {
-      // Step 3: Retry on 5xx (1 call, with recursion prevention)
-      if (!isRetry) {
-        return chatCompletionWithModeration(userMessages, true);
-      }
-      throw error;
-    }
-
-    // Step 4: Output moderation (3 self-calls)
-    await outputModeration(output);
-
-    return output;
-  },
-  { name: "chat_completion_with_moderation" }
-);
-
 async function replicateMemoryLeak() {
   console.log("=== LangSmith Memory Leak Replication Test ===\n");
   console.log("Simulating LangSmith 502 Bad Gateway responses...");
@@ -239,6 +225,8 @@ async function replicateMemoryLeak() {
     const pendingItems = (client as any).pendingAutoBatchedRunLimit || 0;
 
     console.log(`[${elapsed}s] Traces created: ${traceCount} | Queue size: ${queueSize} | Pending: ${pendingItems}`);
+    console.log(`  Overridden fetch calls: ${overriddenFetchCalls}`);
+    console.log(`  Total body size: ${formatBytes(totalBodySize)}`);
     console.log(`  Heap Used: ${formatBytes(currentMemory.heapUsed)} (+${formatBytes(heapGrowth)})`);
     console.log(`  RSS: ${formatBytes(currentMemory.rss)}`);
   }, 5000);
@@ -253,6 +241,31 @@ async function replicateMemoryLeak() {
       );
 
       // Call the main pipeline (fire-and-forget like in production)
+      // Main pipeline with retry logic
+      const chatCompletionWithModeration = traceable(
+        async (userMessages: string[], isRetry: boolean = false): Promise<string> => {
+          // Step 1: Input moderation (up to 6 self-calls)
+          await inputModeration(userMessages);
+
+          // Step 2: Call OpenAI
+          let output: string;
+          try {
+            output = await callOpenAI(userMessages);
+          } catch (error) {
+            // Step 3: Retry on 5xx (1 call, with recursion prevention)
+            if (!isRetry) {
+              return chatCompletionWithModeration(userMessages, true);
+            }
+            throw error;
+          }
+
+          // Step 4: Output moderation (3 self-calls)
+          await outputModeration(output);
+
+          return output;
+        },
+        { name: "chat_completion_with_moderation", client, tracingEnabled: true }
+      );
       const pipelinePromise = chatCompletionWithModeration(userMessages);
 
       // Catch errors to prevent unhandled rejections from crashing the test
@@ -279,6 +292,8 @@ async function replicateMemoryLeak() {
 
   console.log("\n=== Final Memory Report ===");
   console.log(`Total traces attempted: ${traceCount}`);
+  console.log(`\nOverridden fetch calls: ${overriddenFetchCalls}`);
+  console.log(`\nTotal body size: ${formatBytes(totalBodySize)}`);
   console.log(`\nInitial Heap Used: ${formatBytes(initialMemory.heapUsed)}`);
   console.log(`Final Heap Used: ${formatBytes(finalMemory.heapUsed)}`);
   console.log(`Heap Growth: ${formatBytes(heapGrowth)}`);

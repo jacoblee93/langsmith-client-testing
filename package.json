@@ -1,6 +1,7 @@
 {
   "name": "indeed-test",
   "version": "1.0.0",
+  "type": "module",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -12,7 +13,8 @@
   "dependencies": {
     "dotenv": "^17.2.3",
     "langsmith": "0.3.17",
-    "tsx": "^4.20.6"
+    "tsx": "^4.20.6",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1"

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { v4 } from "uuid";
 import { Client } from "langsmith";
 
 /**
@@ -21,7 +22,7 @@ global.fetch = async (input: any, init?: any) => {
   if (url.includes("api.smith.langchain")) {
     // Return a 502 Bad Gateway response
     return new Response(JSON.stringify({ error: "Bad Gateway" }), {
-      status: 502,
+      status: 429,
       statusText: "Bad Gateway",
       headers: { "Content-Type": "application/json" },
     });
@@ -166,6 +167,7 @@ async function replicateMemoryLeak() {
   // Rapidly create traces to trigger multiple concurrent drainAutoBatchQueue() calls
   const traceInterval = setInterval(() => {
     try {
+      const traceId = v4();
       // Create runs with large payloads that will fail to send
       const runPromise = client.createRun({
         name: `test-run-${traceCount}`,
@@ -173,6 +175,8 @@ async function replicateMemoryLeak() {
         inputs: { ...largeInput, iteration: traceCount },
         outputs: largeOutput,
         project_name: "memory-leak-test",
+        trace_id: traceId,
+        dotted_order: `20241013T070535809001Z${traceId}`,
       });
 
       // Catch errors to prevent unhandled rejections from crashing the test

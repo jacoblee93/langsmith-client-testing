@@ -15,7 +15,6 @@ const TEST_DURATION_MS = 120000; // Run for 120 seconds (2 minutes)
 const TRACE_INTERVAL_MS = 10; // Create traces VERY rapidly (100 per second)
 
 // Mock fetch to simulate 502 Bad Gateway responses
-const originalFetch = global.fetch;
 global.fetch = async (input: any, init?: any) => {
   // Intercept requests to LangSmith API and return 502
   const url = typeof input === "string" ? input : input.url;

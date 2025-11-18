@@ -37,7 +37,7 @@ global.fetch = async (input: any, init?: any) => {
     overriddenFetchCalls++;
     totalBodySize += init.body.byteLength;
     // Hang for 1 minute before returning 502
-    // await new Promise((resolve) => setTimeout(resolve, 60000));
+    await new Promise((resolve) => setTimeout(resolve, 60000));
 
     // Return a 502 Bad Gateway response
     return new Response(JSON.stringify({ error: "Bad Gateway" }), {

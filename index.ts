@@ -26,6 +26,7 @@ global.fetch = async (input: any, init?: any) => {
       headers: { "Content-Type": "application/json" },
     });
   }
+  console.log(`Unexpected fetch call: ${url}`);
   throw new Error("Should never happen");
 };
 

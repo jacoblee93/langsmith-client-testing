@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { v4 } from "uuid";
 import { Client } from "langsmith";
+import { traceable } from "langsmith/traceable";
 
 /**
  * Test case to replicate LangSmith SDK memory leak when service is unavailable
@@ -10,6 +11,12 @@ import { Client } from "langsmith";
  * 2. Operations don't complete when API is down (network timeouts)
  * 3. Memory grows unbounded until application crashes
  * 4. Eventually throws: TypeError: Cannot cancel a stream that already has a reader
+ *
+ * Test simulates a complex moderation pipeline with nested traceable calls:
+ * - Input moderation: up to 6 calls (batched, with retries)
+ * - Output moderation: 3 calls
+ * - Retry logic: 1 call
+ * - Maximum total: 10 nested traceable calls per request
  */
 
 const TEST_DURATION_MS = 120000; // Run for 120 seconds (2 minutes)
@@ -22,7 +29,7 @@ global.fetch = async (input: any, init?: any) => {
   if (url.includes("api.smith.langchain")) {
     // Return a 502 Bad Gateway response
     return new Response(JSON.stringify({ error: "Bad Gateway" }), {
-      status: 429,
+      status: 502,
       statusText: "Bad Gateway",
       headers: { "Content-Type": "application/json" },
     });
@@ -44,6 +51,125 @@ function getMemoryUsage() {
     external: usage.external,
   };
 }
+
+// Generate random data that won't compress easily
+function generateRandomText(length: number) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+// Simulate Input Moderation - Mod 1 with batching and retries
+const inputModerationMod1 = traceable(
+  async (messages: string[], attempt: number = 1): Promise<boolean> => {
+    // Simulate moderation logic
+    await new Promise((resolve) => setTimeout(resolve, 1));
+
+    // With retry strategy: 1 attempt + 1 fallback attempt
+    if (attempt === 1 && Math.random() < 0.3) {
+      // 30% chance to retry
+      return inputModerationMod1(messages, 2);
+    }
+
+    return true; // All messages pass moderation
+  },
+  { name: "input_moderation_mod1" }
+);
+
+const inputModeration = traceable(
+  async (userMessages: string[]): Promise<void> => {
+    const BATCH_SIZE = 32;
+    const batches: string[][] = [];
+
+    // Split messages into batches of 32
+    for (let i = 0; i < userMessages.length; i += BATCH_SIZE) {
+      batches.push(userMessages.slice(i, i + BATCH_SIZE));
+    }
+
+    // Process each batch (up to 2 calls per batch with retries)
+    await Promise.all(
+      batches.map((batch) => inputModerationMod1(batch))
+    );
+  },
+  { name: "input_moderation" }
+);
+
+// Simulate Output Moderation - Mod 1 (up to 2 calls)
+const outputModerationMod1 = traceable(
+  async (output: string, attempt: number = 1): Promise<boolean> => {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+
+    if (attempt === 1 && Math.random() < 0.2) {
+      return outputModerationMod1(output, 2);
+    }
+
+    return true;
+  },
+  { name: "output_moderation_mod1" }
+);
+
+// Simulate Output Moderation - Mod 2 (1 call)
+const outputModerationMod2 = traceable(
+  async (output: string): Promise<boolean> => {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    return true;
+  },
+  { name: "output_moderation_mod2" }
+);
+
+const outputModeration = traceable(
+  async (output: string): Promise<void> => {
+    await Promise.all([
+      outputModerationMod1(output),
+      outputModerationMod2(output),
+    ]);
+  },
+  { name: "output_moderation" }
+);
+
+// Simulate OpenAI call
+const callOpenAI = traceable(
+  async (messages: string[]): Promise<string> => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Simulate 5xx errors occasionally
+    if (Math.random() < 0.1) {
+      throw new Error("OpenAI 5xx error");
+    }
+
+    return generateRandomText(5000); // Large response
+  },
+  { name: "openai_call" }
+);
+
+// Main pipeline with retry logic
+const chatCompletionWithModeration = traceable(
+  async (userMessages: string[], isRetry: boolean = false): Promise<string> => {
+    // Step 1: Input moderation (up to 6 self-calls)
+    await inputModeration(userMessages);
+
+    // Step 2: Call OpenAI
+    let output: string;
+    try {
+      output = await callOpenAI(userMessages);
+    } catch (error) {
+      // Step 3: Retry on 5xx (1 call, with recursion prevention)
+      if (!isRetry) {
+        return chatCompletionWithModeration(userMessages, true);
+      }
+      throw error;
+    }
+
+    // Step 4: Output moderation (3 self-calls)
+    await outputModeration(output);
+
+    return output;
+  },
+  { name: "chat_completion_with_moderation" }
+);
 
 async function replicateMemoryLeak() {
   console.log("=== LangSmith Memory Leak Replication Test ===\n");
@@ -102,53 +228,6 @@ async function replicateMemoryLeak() {
   let traceCount = 0;
   const startTime = Date.now();
 
-  // Generate large payload data that won't compress easily
-  const generateRandomText = (length: number) => {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?";
-    let result = "";
-    for (let i = 0; i < length; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-  };
-
-  const largeInput = {
-    query: generateRandomText(5000),
-    context: Array.from({ length: 50 }, (_, i) => ({
-      id: Math.random().toString(36),
-      content: generateRandomText(200),
-      timestamp: Date.now() + i,
-      metadata: { section: i, relevance: Math.random() },
-    })),
-    user_info: {
-      user_id: Math.random().toString(36),
-      session_id: Math.random().toString(36),
-      preferences: generateRandomText(500),
-    },
-    metadata: {
-      request_id: Math.random().toString(36),
-      timestamp: Date.now(),
-      version: "1.0.0",
-    },
-  };
-
-  const largeOutput = {
-    result: generateRandomText(10000),
-    intermediate_steps: Array.from({ length: 100 }, (_, i) => ({
-      step: i,
-      action: generateRandomText(150),
-      observation: generateRandomText(150),
-      thought: generateRandomText(100),
-      score: Math.random(),
-    })),
-    metadata: {
-      processing_time_ms: Math.random() * 1000,
-      model_version: "gpt-4",
-      tokens_used: Math.floor(Math.random() * 10000),
-    },
-    confidence: Math.random(),
-  };
-
   // Monitor memory every 5 seconds
   const memoryMonitor = setInterval(() => {
     const currentMemory = getMemoryUsage();
@@ -164,30 +243,26 @@ async function replicateMemoryLeak() {
     console.log(`  RSS: ${formatBytes(currentMemory.rss)}`);
   }, 5000);
 
-  // Rapidly create traces to trigger multiple concurrent drainAutoBatchQueue() calls
+  // Rapidly create traces using the complex moderation pipeline
+  // This will generate up to 10 nested traceable calls per request
   const traceInterval = setInterval(() => {
     try {
-      const traceId = v4();
-      // Create runs with large payloads that will fail to send
-      const runPromise = client.createRun({
-        name: `test-run-${traceCount}`,
-        run_type: "chain",
-        inputs: { ...largeInput, iteration: traceCount },
-        outputs: largeOutput,
-        project_name: "memory-leak-test",
-        trace_id: traceId,
-        dotted_order: `20241013T070535809001Z${traceId}`,
-      });
+      // Generate 96 user messages to trigger 3 batches × 2 calls = 6 self-calls
+      const userMessages = Array.from({ length: 96 }, (_, i) =>
+        generateRandomText(100) + ` message ${i}`
+      );
+
+      // Call the main pipeline (fire-and-forget like in production)
+      const pipelinePromise = chatCompletionWithModeration(userMessages);
 
       // Catch errors to prevent unhandled rejections from crashing the test
-      runPromise.catch((error) => {
-        // Silently ignore errors - we expect these to fail
-        // In production, these errors might not be properly handled either
+      pipelinePromise.catch((error) => {
+        // Silently ignore errors - we expect these to fail when LangSmith is down
       });
 
       traceCount++;
     } catch (error) {
-      console.error(`\n!!! Synchronous error creating run: ${error}`);
+      console.error(`\n!!! Synchronous error creating trace: ${error}`);
     }
   }, TRACE_INTERVAL_MS);
 

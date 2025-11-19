@@ -37,7 +37,7 @@ global.fetch = async (input: any, init?: any) => {
     overriddenFetchCalls++;
     totalBodySize += init.body.byteLength;
     // Hang for 1 minute before returning 502
-    await new Promise((resolve) => setTimeout(resolve, 60000));
+    await new Promise((resolve) => setTimeout(resolve, Math.random() * 10000));
 
     // Return a 502 Bad Gateway response
     return new Response(JSON.stringify({ error: "Bad Gateway" }), {
@@ -152,7 +152,7 @@ const callOpenAI = traceable(
       throw new Error("OpenAI 5xx error");
     }
 
-    return generateRandomText(5000); // Large response
+    return generateRandomText(Math.floor(Math.random() * 5000)); // Large response
   },
   { name: "openai_call" }
 );
@@ -166,6 +166,7 @@ async function replicateMemoryLeak() {
   const client = new Client({
     apiUrl: "https://api.smith.langchain.com",
     apiKey: "test-api-key",
+    maxIngestMemoryBytes: 1024 * 1024 * 250, // 100MB
   });
 
   // Mock _getServerInfo to return server info but let actual requests fail
@@ -229,6 +230,7 @@ async function replicateMemoryLeak() {
     console.log(`  Total body size: ${formatBytes(totalBodySize)}`);
     console.log(`  Heap Used: ${formatBytes(currentMemory.heapUsed)} (+${formatBytes(heapGrowth)})`);
     console.log(`  RSS: ${formatBytes(currentMemory.rss)}`);
+    console.log(`  Queue size: ${(client as any).batchIngestCaller?.queueSizeBytes} bytes`);
   }, 5000);
 
   // Rapidly create traces using the complex moderation pipeline
@@ -300,6 +302,7 @@ async function replicateMemoryLeak() {
   console.log(`\nInitial RSS: ${formatBytes(initialMemory.rss)}`);
   console.log(`Final RSS: ${formatBytes(finalMemory.rss)}`);
   console.log(`RSS Growth: ${formatBytes(rssGrowth)}`);
+  console.log(`Queue size: ${(client as any).batchIngestCaller?.queueSizeBytes} bytes`);
 
   // Wait a bit to see if memory cleanup happens
   console.log("\nWaiting 10 seconds to observe if memory is released...");

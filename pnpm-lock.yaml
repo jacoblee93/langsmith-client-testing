@@ -9,8 +9,8 @@ dependencies:
     specifier: ^17.2.3
     version: 17.2.3
   langsmith:
-    specifier: 0.3.17
-    version: 0.3.17
+    specifier: 0.3.80
+    version: 0.3.80
   tsx:
     specifier: ^4.20.6
     version: 4.20.6
@@ -367,11 +367,20 @@ packages:
     engines: {node: '>=8'}
     dev: false
 
-  /langsmith@0.3.17:
-    resolution: {integrity: sha512-7BCji5uic1dD6Z6sAOhZSdzORLsgEMBA4WAkJeO6VUKuc452sfi472XSqTTGHOhn6C4hSqNrnMugVLqWhxdEqA==}
+  /langsmith@0.3.80:
+    resolution: {integrity: sha512-BWpbB9/Hkx06S5X4nJE3W5Wm1mH/j6SIqWcM/WAuT+yulohE9knstIJGmBpmSBULb46nCj+cfjRkyF1Nrc4UmA==}
     peerDependencies:
+      '@opentelemetry/api': '*'
+      '@opentelemetry/exporter-trace-otlp-proto': '*'
+      '@opentelemetry/sdk-trace-base': '*'
       openai: '*'
     peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+      '@opentelemetry/exporter-trace-otlp-proto':
+        optional: true
+      '@opentelemetry/sdk-trace-base':
+        optional: true
       openai:
         optional: true
     dependencies:
